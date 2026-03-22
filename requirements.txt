@@ -1,0 +1,4 @@
+telethon==1.36.0
+cryptg==0.4.0          # ускоряет шифрование Telethon
+aiohttp==3.9.5
+aiofiles==23.2.1

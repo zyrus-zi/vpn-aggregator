@@ -1,0 +1,113 @@
+name: VPN Config Aggregator
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"   # каждые 6 часов
+  workflow_dispatch:
+    inputs:
+      max_ping_ms:
+        description: "Макс. пинг (мс)"
+        required: false
+        default: "3000"
+      messages_per_channel:
+        description: "Сообщений с канала"
+        required: false
+        default: "200"
+      run_discovery:
+        description: "Запустить поиск каналов"
+        required: false
+        default: "true"
+      max_discovered_channels:
+        description: "Макс. каналов после discovery"
+        required: false
+        default: "300"
+      bfs_depth:
+        description: "Глубина обхода упоминаний"
+        required: false
+        default: "3"
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  aggregate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Download xray-core
+        run: |
+          XRAY_VER=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest \
+            | grep tag_name | cut -d'"' -f4)
+          echo "Downloading xray ${XRAY_VER}"
+          curl -sL "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VER}/Xray-linux-64.zip" \
+            -o xray.zip
+          unzip -q xray.zip xray
+          chmod +x xray
+          ./xray version
+
+      - name: Run aggregator pipeline
+        env:
+          TG_API_ID:               ${{ secrets.TG_API_ID }}
+          TG_API_HASH:             ${{ secrets.TG_API_HASH }}
+          TG_SESSION:              ${{ secrets.TG_SESSION }}
+          MAX_PING_MS:             ${{ github.event.inputs.max_ping_ms || '3000' }}
+          MESSAGES_PER_CHANNEL:    ${{ github.event.inputs.messages_per_channel || '200' }}
+          RUN_DISCOVERY:           ${{ github.event.inputs.run_discovery || 'true' }}
+          MAX_DISCOVERED_CHANNELS: ${{ github.event.inputs.max_discovered_channels || '300' }}
+          BFS_DEPTH:               ${{ github.event.inputs.bfs_depth || '3' }}
+          CHECKER_CONCURRENCY:     "40"
+          OUTPUT_DIR:              "./output"
+          XRAY_PATH:               "./xray"
+        run: python main.py
+
+      - name: Update README stats
+        run: python scripts/update_readme.py
+
+      - name: Commit results
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add output/ channels.json README.md
+          git diff --staged --quiet || git commit -m \
+            "chore: update subscriptions $(date -u '+%Y-%m-%d %H:%M UTC')"
+          git push
+
+  deploy-pages:
+    needs: aggregate
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+
+      - name: Upload output as Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: output/
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
